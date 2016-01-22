@@ -4,8 +4,10 @@ Improvements on Pyte.
 from __future__ import unicode_literals
 from pyte.streams import Stream
 from pyte.escape import NEL
-from pyte import ctrl
+from pyte import control as ctrl
 from collections import defaultdict
+
+from .log import logger
 
 __all__ = (
     'BetterStream',
@@ -17,12 +19,6 @@ class BetterStream(Stream):
     Extension to the Pyte `Stream` class that also handles "Esc]<num>...BEL"
     sequences. This is used by xterm to set the terminal title.
     """
-    csi = {
-        'n': 'cpr',  # Cursor position request.
-        'c': 'send_device_attributes',  # csi > Ps c
-    }
-    csi.update(Stream.csi)
-
     escape = Stream.escape.copy()
     escape.update({
         # Call next_line instead of line_feed. We always want to go to the left
@@ -35,10 +31,22 @@ class BetterStream(Stream):
         super(BetterStream, self).__init__()
         self.listener = screen
 
+        self._validate_screen()
+
         # Start parser.
         self._parser = self._parser_generator()
         self._parser.send(None)
         self._send = self._parser.send
+
+    def _validate_screen(self):
+        """
+        Check whether our Screen class has all the required callbacks.
+        (We want to verify this statically, before feeding content to the
+        screen.)
+        """
+        for d in [self.basic, self.escape, self.sharp, self.percent, self.csi]:
+            for name in d.values():
+                assert hasattr(self.listener, name), 'Screen is missing %r' % name
 
     def feed(self, chars):
         """
@@ -151,8 +159,15 @@ class BetterStream(Stream):
                         if char == ';':
                             current = ''
                         else:
-                            if private:
-                                dispatch(csi[char], *params, private=True)
-                            else:
-                                dispatch(csi[char], *params)
+                            try:
+                                if private:
+                                    dispatch(csi[char], *params, private=True)
+                                else:
+                                    dispatch(csi[char], *params)
+                            except TypeError:
+                                # Handler doesn't take params or private attribute.
+                                # (Not the cleanest way to handle this, but
+                                # it's safe and performant enough.)
+                                logger.warning('Dispatch %s failed. params=%s, private=%s',
+                                               params, private)
                             break  # Break outside CSI loop.
